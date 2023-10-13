@@ -43,12 +43,17 @@ public class SVInterval implements Comparable<SVInterval> {
     private final int contig;
     private final int start;
     private final int end;
+    private final float score;
 
     /**
      * This constructor uses the {@link SVIntervalConstructorArgsValidator#RefuseNegativeContigAndCoordinates} as the validator.
      */
-    public SVInterval( final int contig, final int start, final int end ) {
-        this(contig, start, end, SVIntervalConstructorArgsValidator.RefuseNegativeContigAndCoordinates);
+    public SVInterval( final int contig, final int start, final int end, final float score) {
+        this(contig, start, end, score, SVIntervalConstructorArgsValidator.RefuseNegativeContigAndCoordinates);
+    }
+
+    public SVInterval( final int contig, final int start, final int end) {
+        this(contig, start, end, 0, SVIntervalConstructorArgsValidator.RefuseNegativeContigAndCoordinates);
     }
 
     @FunctionalInterface
@@ -82,28 +87,36 @@ public class SVInterval implements Comparable<SVInterval> {
                 RefuseNegativeContigs.andThen(RefuseNegativeCoordinates);
     }
 
-    public SVInterval( final int contig, final int start, final int end, final SVIntervalConstructorArgsValidator argsValidator) {
+    public SVInterval(final int contig, final int start, final int end, final float score, final SVIntervalConstructorArgsValidator argsValidator) {
         argsValidator.accept(contig, start, end);
         this.contig = contig;
         this.start = start;
         this.end = end;
+        this.score = score;
+    }
+
+    public SVInterval(final int contig, final int start, final int end, final SVIntervalConstructorArgsValidator argsValidator) {
+        this(contig, start, end, 0, argsValidator);
     }
 
     private SVInterval( final Kryo kryo, final Input input ) {
         contig = input.readInt();
         start = input.readInt();
         end = input.readInt();
+        score = input.readFloat();
     }
 
     private void serialize( final Kryo kryo, final Output output ) {
         output.writeInt(contig);
         output.writeInt(start);
         output.writeInt(end);
+        output.writeFloat(score);
     }
 
     public int getContig() { return contig; }
     public int getStart() { return start; }
     public int getEnd() { return end; }
+    public float getScore() { return score; }
 
     /**
      * Converts SVInterval to SimpleInterval
@@ -217,5 +230,5 @@ public class SVInterval implements Comparable<SVInterval> {
             return new SVInterval(kryo, input);
         }
     }
-
 }
+

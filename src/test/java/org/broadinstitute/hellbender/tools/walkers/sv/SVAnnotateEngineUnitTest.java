@@ -25,6 +25,7 @@ import java.util.*;
 public class SVAnnotateEngineUnitTest extends GATKBaseTest {
     private final File TOY_GTF_FILE = new File(getToolTestDataDir().replaceFirst("Engine", "") + "unittest.gtf");
     private final File TINY_NONCODING_BED_FILE = new File(getToolTestDataDir().replaceFirst("Engine", "") + "noncoding.unittest.bed");
+    private final File TINY_NONCODING_SCORE_BED_FILE = new File(getToolTestDataDir().replaceFirst("Engine", "") + "noncoding_score.unittest.bed");
     private final Set<String> MSV_EXON_OVERLAP_CLASSIFICATIONS = Sets.newHashSet(GATKSVVCFConstants.LOF,
             GATKSVVCFConstants.INT_EXON_DUP,
             GATKSVVCFConstants.DUP_PARTIAL,
@@ -651,5 +652,130 @@ public class SVAnnotateEngineUnitTest extends GATKBaseTest {
         Assert.assertEquals(actualAttributes, expectedAttributes);
     }
 
+    @DataProvider(name = "toyIntronicVariants")
+    public Object[][] getIntronicVariantTestData() {
+       return new Object[][] {
+           {
+               new SimpleInterval("chr1", 250, 274), "ENSE00001448289.4",
+                   "ENSE00001448288.5", 49, 25
+           }
+       };
+    }
 
+    @Test(dataProvider = "toyIntronicVariants")
+    public void testIntronicAnnotations(
+            final SimpleInterval variantInterval,
+            final String upstreamExon,
+            final String downstreamExon,
+            final int upstreamExonDist,
+            final int downstreamExonDist
+    ) {
+        final FeatureDataSource<GencodeGtfGeneFeature> toyGTFSource = SVAnnotateUnitTest.loadToyGTFSource(TOY_GTF_FILE);
+        final Map<String, Set<String>> variantConsequenceDict = new HashMap<>();
+        final SAMSequenceDictionary sequenceDictionary = SVAnnotateUnitTest.createSequenceDictionary(Arrays.asList("chr1"));
+        final int promoterWindow = 1000;
+        final SVAnnotateEngine.GTFIntervalTreesContainer gtfTrees =
+                SVAnnotate.buildIntervalTreesFromGTF(toyGTFSource, sequenceDictionary, promoterWindow);
+        EnumSet<AdvancedAnnotationFeatures> annotationOptions = EnumSet.allOf(AdvancedAnnotationFeatures.class);
+        SVAnnotateEngine svAnnotateEngine = new SVAnnotateEngine(gtfTrees, null, sequenceDictionary,
+                -1, annotationOptions);
+        svAnnotateEngine.annotateGeneOverlaps(variantInterval, GATKSVVCFConstants.StructuralVariantAnnotationType.DEL,
+                variantConsequenceDict);
+
+        System.out.println(variantInterval.getLengthOnReference());
+        Assert.assertEquals(variantConsequenceDict.get(GATKSVVCFConstants.NEAREST_EXON_BEFORE).iterator().next(), upstreamExon);
+        Assert.assertEquals(variantConsequenceDict.get(GATKSVVCFConstants.NEAREST_EXON_AFTER).iterator().next(), downstreamExon);
+        Assert.assertEquals(variantConsequenceDict.get(GATKSVVCFConstants.NEAREST_EXON_BEFORE_DIST).iterator().next(),
+            String.valueOf(upstreamExonDist));
+        Assert.assertEquals(variantConsequenceDict.get(GATKSVVCFConstants.NEAREST_EXON_AFTER_DIST).iterator().next(),
+            String.valueOf(downstreamExonDist));
+    }
+    @DataProvider(name = "toyNonCodingScoreVariants")
+    public Object[][] getNonCodingScoreTestData() {
+        return new Object[][] {
+                { new SimpleInterval("chr1", 250, 350), 0, 0 },
+                { new SimpleInterval("chr1", 350, 550), 100, 100 * 100 },
+                { new SimpleInterval("chr1", 350, 750), 200, 100 * (100 + 200) },
+                { new SimpleInterval("chr1", 350, 1000), 250, 100 * (100 + 200) + 50 * 300 },
+                { new SimpleInterval("chr1", 350, 650), 150, 100 * 100 + 200 * 50 },
+
+        };
+    }
+    @Test(dataProvider = "toyNonCodingScoreVariants")
+    public void testNonCodingScoreVariants(SimpleInterval variantinterval, int totallength, double totalscore) {
+        final SAMSequenceDictionary sequenceDictionary =
+                SVAnnotateUnitTest.createSequenceDictionary(Arrays.asList("chr1"));
+        final int maxBreakendLen = -1;
+
+        final FeatureDataSource<FullBEDFeature> tinyNoncodingBedSource =
+                SVAnnotateUnitTest.loadTinyNoncodingBEDSource(TINY_NONCODING_SCORE_BED_FILE);
+        final SVIntervalTree<String> nonCodingIntervalTree =
+                SVAnnotate.buildIntervalTreeFromBED(tinyNoncodingBedSource, sequenceDictionary);
+
+        final Map<String, Set<String>> variantConsequenceDict = new HashMap<>();
+        SVAnnotateEngine svAnnotateEngine = new SVAnnotateEngine(null, nonCodingIntervalTree, sequenceDictionary, maxBreakendLen);
+        svAnnotateEngine.annotateNonCodingScore(variantinterval, variantConsequenceDict);
+        Assert.assertEquals(variantConsequenceDict.get(GATKSVVCFConstants.NONCODING_SCORE_LENGTH).iterator().next(), String.valueOf(totallength));
+        Assert.assertEquals(variantConsequenceDict.get(GATKSVVCFConstants.NONCODING_SCORE_SUM).iterator().next(), String.valueOf(totalscore));
+    }
+    @DataProvider(name="toyExonOverlapVariants")
+    public Object[][] getExonOverlapVariantTestData() {
+        return new Object[][] {
+                {
+                    new SimpleInterval("chr1", 1, 250),
+                        Collections.singletonMap(
+                                GATKSVVCFConstants.EXON_OVERLAP_BP,
+                                new HashSet<>(Arrays.asList(
+                                        "ENSE00001448289.4/101"
+                                ))
+                        ),
+                },
+                {
+                        new SimpleInterval("chr1", 1, 349),
+                        Collections.singletonMap(
+                                GATKSVVCFConstants.EXON_OVERLAP_BP,
+                                new HashSet<>(Arrays.asList(
+                                        "ENSE00001448289.4/101",
+                                        "ENSE00001448288.5/50"
+                                ))
+                        ),
+                },
+                {
+                        new SimpleInterval("chr1", 850, 2450),
+                        Collections.singletonMap(
+                                GATKSVVCFConstants.EXON_OVERLAP_BP,
+                                new HashSet<>(Arrays.asList(
+                                        "ENSE00001448288.8/101",
+                                        "ENSE00001448288.8/101",
+                                        "ENSE00001448288.7/101"
+                                ))
+                        ),
+                }
+        };
+    }
+
+    @Test(dataProvider = "toyExonOverlapVariants")
+    public void testExonOverlapVariants(SimpleInterval variantInterval, Map<String, Set<String>> expectedConsequenceDict) {
+
+        final FeatureDataSource<GencodeGtfGeneFeature> toyGTFSource = SVAnnotateUnitTest.loadToyGTFSource(TOY_GTF_FILE);
+        final Map<String, Set<String>> variantConsequenceDict = new HashMap<>();
+        final SAMSequenceDictionary sequenceDictionary = SVAnnotateUnitTest.createSequenceDictionary(Arrays.asList("chr1"));
+        final int promoterWindow = 1000;
+        final SVAnnotateEngine.GTFIntervalTreesContainer gtfTrees =
+                SVAnnotate.buildIntervalTreesFromGTF(toyGTFSource, sequenceDictionary, promoterWindow);
+        EnumSet<AdvancedAnnotationFeatures> annotationOptions = EnumSet.allOf(AdvancedAnnotationFeatures.class);
+        SVAnnotateEngine svAnnotateEngine = new SVAnnotateEngine(gtfTrees, null, sequenceDictionary,
+                -1, annotationOptions);
+        svAnnotateEngine.annotateGeneOverlaps(variantInterval, GATKSVVCFConstants.StructuralVariantAnnotationType.DEL,
+                variantConsequenceDict);
+        final Map<String, Object> expectedAttributes =
+                SVAnnotateEngine.sortVariantConsequenceDict(expectedConsequenceDict);
+
+        final Map<String, Object> actualAttributes =
+                SVAnnotateEngine.sortVariantConsequenceDict(variantConsequenceDict);
+
+        Assert.assertEquals(actualAttributes.get(GATKSVVCFConstants.EXON_OVERLAP_BP),
+                expectedAttributes.get(GATKSVVCFConstants.EXON_OVERLAP_BP));
+
+    }
 }

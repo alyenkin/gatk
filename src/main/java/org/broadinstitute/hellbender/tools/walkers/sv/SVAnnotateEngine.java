@@ -14,6 +14,7 @@ import org.broadinstitute.hellbender.utils.SVIntervalTree;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
 import org.broadinstitute.hellbender.utils.codecs.gtf.GencodeGtfFeature;
 import org.broadinstitute.hellbender.utils.codecs.gtf.GencodeGtfTranscriptFeature;
+import org.broadinstitute.hellbender.utils.codecs.gtf.GencodeGtfExonFeature;
 import org.broadinstitute.hellbender.utils.variant.GATKSVVariantContextUtils;
 
 import java.util.*;
@@ -23,6 +24,7 @@ public class SVAnnotateEngine {
     private final GTFIntervalTreesContainer gtfIntervalTrees;
     private final SVIntervalTree<String> nonCodingIntervalTree;
     private final SAMSequenceDictionary sequenceDictionary;
+    private final EnumSet<AdvancedAnnotationFeatures> advFeatureOptions;
 
     private final Set<String> MSV_EXON_OVERLAP_CLASSIFICATIONS = Sets.newHashSet(GATKSVVCFConstants.LOF,
             GATKSVVCFConstants.INT_EXON_DUP,
@@ -92,10 +94,20 @@ public class SVAnnotateEngine {
                             final SVIntervalTree<String> nonCodingIntervalTree,
                             final SAMSequenceDictionary sequenceDictionary,
                             final int maxBreakendLen) {
+        this(gtfIntervalTrees, nonCodingIntervalTree, sequenceDictionary, maxBreakendLen,
+                EnumSet.noneOf(AdvancedAnnotationFeatures.class));
+    }
+
+    public SVAnnotateEngine(final GTFIntervalTreesContainer gtfIntervalTrees,
+                            final SVIntervalTree<String> nonCodingIntervalTree,
+                            final SAMSequenceDictionary sequenceDictionary,
+                            final int maxBreakendLen,
+                            final EnumSet<AdvancedAnnotationFeatures> optionSet) {
         this.gtfIntervalTrees = gtfIntervalTrees;
         this.nonCodingIntervalTree = nonCodingIntervalTree;
         this.sequenceDictionary = sequenceDictionary;
         this.maxBreakendLen = maxBreakendLen;
+        this.advFeatureOptions = optionSet;
     }
 
     /**
@@ -373,10 +385,84 @@ public class SVAnnotateEngine {
                 consequence = null;
                 break;
         }
+        if (Objects.equals(consequence, GATKSVVCFConstants.INTRONIC)) {
+            if (advFeatureOptions.contains(AdvancedAnnotationFeatures.INTRON_NEAREST_EXONS)) {
+                annotateNearestExon(variantInterval, transcript, variantConsequenceDict);
+            }
+        } else {
+            if (advFeatureOptions.contains(AdvancedAnnotationFeatures.EXON_BP_OVERLAP)) {
+                annotateExonOverlaps(variantInterval, transcript, variantConsequenceDict);
+            }
+        }
 
         if (consequence != null) {
             updateVariantConsequenceDict(variantConsequenceDict, consequence, transcript.getGeneName());
         }
+    }
+
+    /**
+     * Annotates exons and the bp overlaps for variants that hit coding regions
+     * @param variantInterval - SimpleInterval representing structural variant
+     * @param transcript - protein-coding GTF transcript
+     * @param variantConsequenceDict - running map of consequence -> feature name for variant to update
+     */
+    // TODO: This has a lot of overlap with DUP annotation so they should probably be combined somehow
+    private void annotateExonOverlaps(SimpleInterval variantInterval, GencodeGtfTranscriptFeature transcript,
+                                   Map<String, Set<String>> variantConsequenceDict) {
+        SVIntervalTree<GencodeGtfExonFeature> exonTree = new SVIntervalTree<>();
+        for ( final GencodeGtfExonFeature exon: transcript.getExons()) {
+            exonTree.put(SVUtils.locatableToSVInterval(exon, sequenceDictionary), exon);
+        }
+        final int variantContigID = SVUtils.getContigIDFromName(variantInterval.getContig(), sequenceDictionary);
+        final SVInterval svInterval = SVUtils.locatableToSVInterval(variantInterval, sequenceDictionary);
+        final Iterator<SVIntervalTree.Entry<GencodeGtfExonFeature>> exonsForVariant = exonTree.overlappers(svInterval);
+        for (Iterator<SVIntervalTree.Entry<GencodeGtfExonFeature>> it = exonsForVariant; it.hasNext(); ) {
+            SVIntervalTree.Entry<GencodeGtfExonFeature> exonEntry = it.next();
+            String exonCover = exonEntry.getValue().getExonId() + "/" +
+                    String.valueOf(svInterval.overlapLen(exonEntry.getInterval()));
+            updateVariantConsequenceDict(variantConsequenceDict, GATKSVVCFConstants.EXON_OVERLAP_BP, exonCover);
+        }
+    }
+
+
+    /**
+     * Adds in nearest exons information for intronic variants
+     * @param variantInterval - SimpleInterval representing structural variant
+     * @param transcript - protein-coding GTF transcript
+     * @param variantConsequenceDict - running map of consequence -> feature name for variant to update
+     */
+    private void annotateNearestExon(final SimpleInterval variantInterval, final GencodeGtfTranscriptFeature transcript,
+                                     final Map<String, Set<String>> variantConsequenceDict) {
+
+        SVIntervalTree<GencodeGtfExonFeature> exonTree = new SVIntervalTree<>();
+        for ( final GencodeGtfExonFeature exon: transcript.getExons()) {
+            exonTree.put(SVUtils.locatableToSVInterval(exon, sequenceDictionary), exon);
+        }
+        final int variantContigID = SVUtils.getContigIDFromName(variantInterval.getContig(), sequenceDictionary);
+        final SVInterval svInterval = SVUtils.locatableToSVInterval(variantInterval, sequenceDictionary);
+        final SVIntervalTree.Entry<GencodeGtfExonFeature> nearestBefore = exonTree.max(svInterval);
+        final SVIntervalTree.Entry<GencodeGtfExonFeature> nearestAfter = exonTree.min(svInterval);
+        final int intronLength = nearestAfter.getInterval().getStart() - nearestAfter.getInterval().getEnd();
+        // nearest TSS only "valid" for annotation if non-null and on the same contig as the variant
+        final boolean beforeValid = nearestBefore != null && nearestBefore.getInterval().getContig() == variantContigID;
+        final boolean afterValid = nearestAfter != null && nearestAfter.getInterval().getContig() == variantContigID;
+        // only update if at least one Exon is valid
+        if (!beforeValid && !afterValid) {
+            // TODO: Change this to correct Exception class
+            throw new UserException("Intronic variant error: can't find surrounding exons for variant at " +
+                    svInterval.toString());
+        }
+        // set distance to closest valid Exon
+        final int distanceBefore = nearestBefore.getInterval().gapLen(svInterval);
+        final int distanceAfter = svInterval.gapLen(nearestAfter.getInterval());
+        updateVariantConsequenceDict(variantConsequenceDict, GATKSVVCFConstants.NEAREST_EXON_BEFORE,
+                nearestBefore.getValue().getExonId());
+        updateVariantConsequenceDict(variantConsequenceDict, GATKSVVCFConstants.NEAREST_EXON_BEFORE_DIST,
+                String.valueOf(distanceBefore));
+        updateVariantConsequenceDict(variantConsequenceDict, GATKSVVCFConstants.NEAREST_EXON_AFTER,
+                nearestAfter.getValue().getExonId());
+        updateVariantConsequenceDict(variantConsequenceDict, GATKSVVCFConstants.NEAREST_EXON_AFTER_DIST,
+                String.valueOf(distanceAfter));
     }
 
     /**
@@ -406,7 +492,7 @@ public class SVAnnotateEngine {
      * @param variantInterval - SimpleInterval representing structural variant
      * @param variantConsequenceDict - running map of consequence -> feature name for variant to update
      */
-    private void annotateNonCodingOverlaps(final SimpleInterval variantInterval,
+    protected void annotateNonCodingOverlaps(final SimpleInterval variantInterval,
                                                   final Map<String, Set<String>> variantConsequenceDict) {
         final Iterator<SVIntervalTree.Entry<String>> nonCodingFeaturesForVariant =
                 nonCodingIntervalTree.overlappers(SVUtils.locatableToSVInterval(variantInterval, sequenceDictionary));
@@ -417,6 +503,34 @@ public class SVAnnotateEngine {
                             GATKSVVCFConstants.NONCODING_SPAN : GATKSVVCFConstants.NONCODING_BREAKPOINT;
             updateVariantConsequenceDict(variantConsequenceDict, consequence, featureEntry.getValue());
         }
+    }
+
+    /**
+     * Calculate mean value for overlapping noncoding elements for a variant to its consequence dictionary
+     * @param variantInterval - SimpleInterval representing structural variant
+     * @param variantConsequenceDict - running map of consequence -> feature name for variant to update
+     */
+    @VisibleForTesting
+    protected void annotateNonCodingScore(final SimpleInterval variantInterval,
+                                           final Map<String, Set<String>> variantConsequenceDict) {
+        final SVInterval svVariantInterval = SVUtils.locatableToSVInterval(variantInterval, sequenceDictionary);
+        final Iterator<SVIntervalTree.Entry<String>> nonCodingFeaturesForVariant =
+                nonCodingIntervalTree.overlappers(svVariantInterval);
+        double totalscore = 0;
+        int totallength = 0;
+        int length;
+        for (Iterator<SVIntervalTree.Entry<String>> it = nonCodingFeaturesForVariant; it.hasNext(); ) {
+            SVIntervalTree.Entry<String> featureEntry = it.next();
+            if (!svVariantInterval.contains(featureEntry.getInterval())) {
+                length = svVariantInterval.overlapLen(featureEntry.getInterval());
+            } else {
+                length = featureEntry.getInterval().getLength();
+            }
+            totallength += length;
+            totalscore += featureEntry.getInterval().getScore() * length;
+        }
+        updateVariantConsequenceDict(variantConsequenceDict, GATKSVVCFConstants.NONCODING_SCORE_SUM, String.valueOf(totalscore));
+        updateVariantConsequenceDict(variantConsequenceDict, GATKSVVCFConstants.NONCODING_SCORE_LENGTH, String.valueOf(totallength));
     }
 
     /**
@@ -443,7 +557,13 @@ public class SVAnnotateEngine {
             final int distanceAfter = afterValid ? svInterval.gapLen(nearestAfter.getInterval()) : Integer.MAX_VALUE;
             final String nearestTSSGeneName =
                     (distanceBefore < distanceAfter) ? nearestBefore.getValue() : nearestAfter.getValue();
+            final int nearestTSSDist =
+                    Math.min(distanceBefore, distanceAfter);
+
             updateVariantConsequenceDict(variantConsequenceDict, GATKSVVCFConstants.NEAREST_TSS, nearestTSSGeneName);
+            if (advFeatureOptions.contains(AdvancedAnnotationFeatures.DIST_TO_TSS)) {
+                updateVariantConsequenceDict(variantConsequenceDict, GATKSVVCFConstants.NEAREST_TSS_DIST, String.valueOf(nearestTSSDist));
+            }
         }
     }
 
@@ -668,7 +788,11 @@ public class SVAnnotateEngine {
 
         if (nonCodingIntervalTree != null) {
             for (SVSegment svSegment : svSegments) {
-                annotateNonCodingOverlaps(svSegment.getInterval(), variantConsequenceDict);
+                if (this.advFeatureOptions.contains(AdvancedAnnotationFeatures.NONCODING_SCORE)) {
+                   annotateNonCodingScore(svSegment.getInterval(), variantConsequenceDict);
+                } else {
+                    annotateNonCodingOverlaps(svSegment.getInterval(), variantConsequenceDict);
+                }
             }
         }
 
@@ -698,6 +822,4 @@ public class SVAnnotateEngine {
                 .putAttributes(attributes)
                 .make();
     }
-
-
 }

@@ -138,6 +138,12 @@ public final class SVUtils {
         final Integer contigID = getContigIDFromName(loc.getContig(), sequenceDictionary);
         return new SVInterval(contigID, loc.getStart(), loc.getEnd() + 1);
     }
+    public static SVInterval locatableToSVInterval(final Locatable loc,
+                                                   final SAMSequenceDictionary sequenceDictionary,
+                                                   final float value) {
+        final Integer contigID = getContigIDFromName(loc.getContig(), sequenceDictionary);
+        return new SVInterval(contigID, loc.getStart(), loc.getEnd() + 1, value );
+    }
 
     // =================================================================================================================
 

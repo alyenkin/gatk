@@ -161,8 +161,17 @@ public final class GATKSVVCFConstants {
     public static final String INTERGENIC = "PREDICTED_INTERGENIC";
     public static final String NONCODING_SPAN = "PREDICTED_NONCODING_SPAN";
     public static final String NONCODING_BREAKPOINT = "PREDICTED_NONCODING_BREAKPOINT";
+    public static final String NONCODING_SCORE_SUM = "PREDICTED_NONCODING_SCORE_SUM";
+    public static final String NONCODING_SCORE_LENGTH = "PREDICTED_NONCODING_TOTAL_INTERVAL_LENGTH";
     public static final String NEAREST_TSS = "PREDICTED_NEAREST_TSS";
     public static final String TSS_DUP = "PREDICTED_TSS_DUP";
+    public static final String NEAREST_TSS_DIST = "PREDICTED_NEAREST_TSS_DIST";
+
+    public static final String NEAREST_EXON_BEFORE = "PREDICTED_INTRONIC_CLOSEST_UPSTREAM_EXON";
+    public static final String NEAREST_EXON_BEFORE_DIST = "PREDICTED_INTRONIC_CLOSEST_UPSTREAM_EXON_DIST";
+    public static final String NEAREST_EXON_AFTER = "PREDICTED_INTRONIC_CLOSEST_DOWNSTREAM_EXON";
+    public static final String NEAREST_EXON_AFTER_DIST = "PREDICTED_INTRONIC_CLOSEST_DOWNSTREAM_EXON_DIST";
+    public static final String EXON_OVERLAP_BP = "PREDICTED_EXON_OVERLAP_BP";
 
     // SVTYPE classes
     public enum StructuralVariantAnnotationType {

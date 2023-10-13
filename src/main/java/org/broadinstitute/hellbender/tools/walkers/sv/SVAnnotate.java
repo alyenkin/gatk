@@ -171,6 +171,7 @@ public final class SVAnnotate extends VariantWalker {
     public static final String PROMOTER_WINDOW_NAME = "promoter-window-length";
     public static final String NON_CODING_BED_NAME = "non-coding-bed";
     public static final String MAX_BND_LEN_NAME = "max-breakend-as-cnv-length";
+    public static final String ADV_ANN_OPTIONS_NAME = "adv-annotation-options";
 
     @Argument(
             fullName = StandardArgumentDefinitions.OUTPUT_LONG_NAME,
@@ -209,14 +210,23 @@ public final class SVAnnotate extends VariantWalker {
     )
     private int maxBreakendLen = -1;
 
+    @Argument(
+            fullName=ADV_ANN_OPTIONS_NAME,
+            doc="Flags for advanced annotation options in the form of an integer. See documentation",
+            minValue=0,optional=true
+    )
+    private int advAnnFeaturesNum = 0;
+
     private VariantContextWriter vcfWriter = null;
     private SVIntervalTree<String> nonCodingIntervalTree;
     private SVAnnotateEngine.GTFIntervalTreesContainer gtfIntervalTrees;
+    private EnumSet<AdvancedAnnotationFeatures> advAnnotationFeatures;
     private SAMSequenceDictionary sequenceDictionary;
     private SVAnnotateEngine svAnnotateEngine;
 
     @Override
     public void onTraversalStart() {
+        advAnnotationFeatures = parseAdvAnnotationOptions(advAnnFeaturesNum);
         final VCFHeader header = getHeaderForVariants();
         // get contigs from VCF
         sequenceDictionary = header.getSequenceDictionary();
@@ -237,7 +247,7 @@ public final class SVAnnotate extends VariantWalker {
         updateAndWriteHeader(header);
 
         svAnnotateEngine = new SVAnnotateEngine(gtfIntervalTrees, nonCodingIntervalTree, sequenceDictionary,
-                maxBreakendLen);
+                maxBreakendLen, advAnnotationFeatures);
     }
 
     /**
@@ -325,12 +335,38 @@ public final class SVAnnotate extends VariantWalker {
         for (final FullBEDFeature feature : BEDSource) {
             // BED feature class already does start+1 conversion to 1-based closed interval
             try {
-                BEDIntervalTree.put(SVUtils.locatableToSVInterval(feature, sequenceDictionary), feature.getName());
+                BEDIntervalTree.put(SVUtils.locatableToSVInterval(feature, sequenceDictionary, feature.getScore()), feature.getName());
             } catch (IllegalArgumentException e) {
                 continue;  // if BED input contains chromosome not in VCF sequence dictionary, just ignore it
             }
         }
         return BEDIntervalTree;
+    }
+
+
+    /**
+     * A function that calculates the Advanced Feature Flags to use based on the input number
+     * @param n The input number (interpreted as a binary string basically)
+     * @return an EnumSet with the advanced features to identify
+     */
+    private static EnumSet<AdvancedAnnotationFeatures> parseAdvAnnotationOptions(int n) {
+        if (n >= Math.pow(2, AdvancedAnnotationFeatures.values().length)) {
+            throw new IllegalArgumentException("Invalid Advanced Annotation value");
+        }
+        EnumSet<AdvancedAnnotationFeatures> optSet = EnumSet.noneOf(AdvancedAnnotationFeatures.class);
+        if (n % 2 == 1) {
+            optSet.add(AdvancedAnnotationFeatures.DIST_TO_TSS);
+        }
+        if ((n/2) % 2 == 1) {
+            optSet.add(AdvancedAnnotationFeatures.INTRON_NEAREST_EXONS);
+        }
+        if ((n/4) % 2 == 1) {
+            optSet.add(AdvancedAnnotationFeatures.EXON_BP_OVERLAP);
+        }
+        if ((n/8) % 2 == 1) {
+            optSet.add(AdvancedAnnotationFeatures.NONCODING_SCORE);
+        }
+        return optSet;
     }
 
     /**
@@ -354,6 +390,29 @@ public final class SVAnnotate extends VariantWalker {
         header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NONCODING_SPAN, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.String, "Class(es) of noncoding elements spanned by SV."));
         header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NONCODING_BREAKPOINT, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.String, "Class(es) of noncoding elements disrupted by SV breakpoint."));
         header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NEAREST_TSS, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.String, "Nearest transcription start site to an intergenic variant."));
+    }
+
+    /**
+     * Adds optional SV functional annotations based on advanced options
+     * @param header - VCF header to which to add INFO keys
+     */
+    private void addOptionalAnnotationInfoKeysToHeader(final VCFHeader header) {
+        if (advAnnotationFeatures.contains(AdvancedAnnotationFeatures.NONCODING_SCORE)) {
+            header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NONCODING_SCORE_LENGTH, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.Integer, "Total length of overlap for noncoding regions specified in bed file"));
+            header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NONCODING_SCORE_SUM, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.Float, "Total score (summed across bp overlap) for noncoding regions specified in bed file"));
+        }
+        if (advAnnotationFeatures.contains(AdvancedAnnotationFeatures.INTRON_NEAREST_EXONS)) {
+            header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NEAREST_EXON_BEFORE, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.String, "Closest upstream exon for intronic variants."));
+            header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NEAREST_EXON_BEFORE_DIST, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.String, "Distance to closest upstream exon for intronic variants."));
+            header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NEAREST_EXON_AFTER, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.String, "Closest downstream exon for intronic variants."));
+            header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NEAREST_EXON_AFTER_DIST, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.String, "Distance to closest downstream exon for intronic variants."));
+        }
+        if (advAnnotationFeatures.contains(AdvancedAnnotationFeatures.DIST_TO_TSS)) {
+            header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.NEAREST_TSS_DIST, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.String, "Distance to the nearest transcription start site for an intergenic variant."));
+        }
+        if (advAnnotationFeatures.contains(AdvancedAnnotationFeatures.EXON_BP_OVERLAP)) {
+            header.addMetaDataLine(new VCFInfoHeaderLine(GATKSVVCFConstants.EXON_OVERLAP_BP, VCFHeaderLineCount.UNBOUNDED, VCFHeaderLineType.String, "Comma separated list of exons and the number of bp overlap: format {exon}/{# bp}"));
+        }
 
     }
 
@@ -363,6 +422,7 @@ public final class SVAnnotate extends VariantWalker {
      */
     private void updateAndWriteHeader(final VCFHeader header) {
         addAnnotationInfoKeysToHeader(header);
+        addOptionalAnnotationInfoKeysToHeader(header);
         vcfWriter.writeHeader(header);
     }
 
